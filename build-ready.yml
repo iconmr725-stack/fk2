@@ -1,0 +1,264 @@
+name: Build FK Multimedia APK
+
+on:
+  push:
+  workflow_dispatch:
+
+env:
+  # CHANGE THIS to your hosted backend address (no slash at the end)
+  SERVER_URL: https://fk-jkua.onrender.com
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.7
+
+      - name: Generate Android project
+        run: |
+          mkdir -p fkapp/app/src/main/kotlin/com/fk/multimedia
+          cd fkapp
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "FKMultimedia"
+          include ':app'
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.24' apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=true
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+          android {
+              namespace 'com.fk.multimedia'
+              compileSdk 34
+              defaultConfig {
+                  applicationId 'com.fk.multimedia'
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+              <application
+                  android:label="FK Multimedia"
+                  android:theme="@android:style/Theme.Material.NoActionBar">
+                  <activity android:name=".MainActivity" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/kotlin/com/fk/multimedia/MainActivity.kt <<'EOF'
+          package com.fk.multimedia
+
+          import android.Manifest
+          import android.app.Activity
+          import android.app.DownloadManager
+          import android.content.ClipboardManager
+          import android.content.Context
+          import android.graphics.Color
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Environment
+          import android.view.Gravity
+          import android.widget.Button
+          import android.widget.EditText
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import org.json.JSONObject
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import java.net.URLEncoder
+          import kotlin.concurrent.thread
+
+          class MainActivity : Activity() {
+
+              private val server = "SERVER_PLACEHOLDER"
+              private lateinit var input: EditText
+              private lateinit var status: TextView
+              private lateinit var button: Button
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  if (Build.VERSION.SDK_INT in 23..28) {
+                      requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), 1)
+                  }
+                  val d = resources.displayMetrics.density
+                  val pad = (20 * d).toInt()
+
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(pad, pad * 3, pad, pad)
+                      setBackgroundColor(Color.parseColor("#0f0f14"))
+                  }
+                  root.addView(TextView(this).apply {
+                      text = "FK Multimedia Video Downloader"
+                      textSize = 22f
+                      setTextColor(Color.WHITE)
+                      gravity = Gravity.CENTER
+                  })
+                  root.addView(TextView(this).apply {
+                      text = "Florence K · TikTok, Instagram, Facebook, X, Snapchat and more"
+                      textSize = 13f
+                      setTextColor(Color.parseColor("#9aa0b4"))
+                      gravity = Gravity.CENTER
+                      setPadding(0, pad / 2, 0, pad * 2)
+                  })
+
+                  input = EditText(this).apply {
+                      hint = "Paste video link here"
+                      setHintTextColor(Color.parseColor("#6b7085"))
+                      setTextColor(Color.WHITE)
+                      setSingleLine(true)
+                  }
+                  root.addView(input)
+
+                  root.addView(Button(this).apply {
+                      text = "Paste from clipboard"
+                      setOnClickListener {
+                          val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                          val t = cm.primaryClip?.getItemAt(0)?.text?.toString()
+                          if (!t.isNullOrBlank()) input.setText(t)
+                      }
+                  })
+
+                  button = Button(this).apply {
+                      text = "Download video"
+                      setOnClickListener { startDownload() }
+                  }
+                  root.addView(button)
+
+                  status = TextView(this).apply {
+                      textSize = 15f
+                      setTextColor(Color.parseColor("#c9cde0"))
+                      setPadding(0, pad, 0, 0)
+                  }
+                  root.addView(status)
+                  setContentView(root)
+
+                  // Load color and notice set from the admin page
+                  thread {
+                      try {
+                          val body = get("$server/api/config")
+                          val c = JSONObject(body)
+                          runOnUiThread {
+                              try { button.setBackgroundColor(Color.parseColor(c.getString("color"))) } catch (e: Exception) {}
+                              val note = c.optString("announcement")
+                              if (note.isNotEmpty()) status.text = note
+                          }
+                      } catch (e: Exception) {}
+                  }
+              }
+
+              private fun get(u: String): String {
+                  val conn = URL(u).openConnection() as HttpURLConnection
+                  conn.connectTimeout = 20000
+                  conn.readTimeout = 70000
+                  if (conn.responseCode >= 400) {
+                      val err = conn.errorStream?.bufferedReader()?.readText() ?: ""
+                      throw Exception(try { JSONObject(err).getString("error") } catch (e: Exception) { "Server error" })
+                  }
+                  return conn.inputStream.bufferedReader().readText()
+              }
+
+              private fun startDownload() {
+                  val raw = input.text.toString().trim()
+                  val link = Regex("https?://\\S+").find(raw)?.value
+                  if (link == null) {
+                      status.text = "Please paste a valid video link."
+                      return
+                  }
+                  status.text = "Loading video... (first load can take up to a minute)"
+                  button.isEnabled = false
+                  thread {
+                      try {
+                          val enc = URLEncoder.encode(link, "UTF-8")
+                          get("$server/api/info?url=$enc")
+                          val req = DownloadManager.Request(Uri.parse("$server/api/download?url=$enc"))
+                              .setTitle("FK Multimedia")
+                              .setMimeType("video/mp4")
+                              .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                              .setDestinationInExternalPublicDir(
+                                  Environment.DIRECTORY_MOVIES,
+                                  "FKMultimedia/FK_" + System.currentTimeMillis() + ".mp4"
+                              )
+                          (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(req)
+                          runOnUiThread {
+                              status.text = "Downloading... it will appear in your gallery (Movies/FKMultimedia) when done."
+                              button.isEnabled = true
+                          }
+                      } catch (e: Exception) {
+                          runOnUiThread {
+                              status.text = "Failed: " + (e.message ?: "unknown error")
+                              button.isEnabled = true
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          sed -i "s|SERVER_PLACEHOLDER|${SERVER_URL}|" app/src/main/kotlin/com/fk/multimedia/MainActivity.kt
+
+      - name: Build debug APK
+        working-directory: fkapp
+        run: gradle assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FK-Multimedia-APK
+          path: fkapp/app/build/outputs/apk/debug/*.apk
